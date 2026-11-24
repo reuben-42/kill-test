@@ -95,7 +95,7 @@ def test_fit_recovers_identity():
     torch.manual_seed(1)
     calib = [torch.randint(0, 128, (1, 64)) for _ in range(12)]
     mp, rep = fit_mapper((m, m.config), (m, m.config), calib, k=1, lam=1e-4, n_select_seqs=6,
-                         n_val_seqs=3, device="cpu", log=lambda *_: None)
+                         n_val_seqs=3, device="cpu", log=lambda *_: None, progress=False)
     assert mp.sel_k == [[0], [1], [2]] and mp.sel_v == [[0], [1], [2]]
     assert rep["mean_val_r2_k"] > 0.99 and rep["mean_val_r2_v"] > 0.99
 
@@ -106,8 +106,8 @@ def test_end_to_end_two_different_models(tmp_path):
     torch.manual_seed(2)
     calib = [torch.randint(0, 128, (1, 48)) for _ in range(10)]
     q = lambda *_: None
-    s2l, _ = fit_mapper((S, S.config), (L, L.config), calib, k=2, n_select_seqs=4, device="cpu", log=q)
-    l2s, _ = fit_mapper((L, L.config), (S, S.config), calib, k=2, n_select_seqs=4, device="cpu", log=q)
+    s2l, _ = fit_mapper((S, S.config), (L, L.config), calib, k=2, n_select_seqs=4, device="cpu", log=q, progress=False)
+    l2s, _ = fit_mapper((L, L.config), (S, S.config), calib, k=2, n_select_seqs=4, device="cpu", log=q, progress=False)
     path = tmp_path / "s2l.pt"
     s2l.save(path)
     s2l = Mapper.load(path, S.config, L.config)

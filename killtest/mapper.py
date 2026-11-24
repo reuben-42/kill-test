@@ -15,7 +15,7 @@ Details the paper does not pin down (our choices, easy to change):
 """
 from __future__ import annotations
 
-import math
+import time
 
 import torch
 
@@ -83,6 +83,32 @@ class Mapper:
 # --------------------------------------------------------------------------- #
 # Fitting
 # --------------------------------------------------------------------------- #
+class Progress:
+    """One line that updates in place: 'label 12/60 | 1m 30s elapsed, ~6m left'."""
+
+    def __init__(self, total, label, enabled=True):
+        self.total, self.label, self.enabled = total, label, enabled
+        self.i, self.t0 = 0, time.time()
+        self._show()
+
+    @staticmethod
+    def _fmt(sec):
+        sec = int(sec)
+        return f"{sec // 3600}h {sec % 3600 // 60}m" if sec >= 3600 else f"{sec // 60}m {sec % 60:02d}s"
+
+    def _show(self):
+        if not self.enabled:
+            return
+        el = time.time() - self.t0
+        eta = f", ~{self._fmt(el / self.i * (self.total - self.i))} left" if 0 < self.i < self.total else ""
+        end = "\n" if self.i == self.total else ""
+        print(f"\r    {self.label} {self.i}/{self.total} | {self._fmt(el)} elapsed{eta}   ", end=end, flush=True)
+
+    def step(self):
+        self.i += 1
+        self._show()
+
+
 def _r2_per_head(y, pred, n_heads):
     """Head-averaged R^2 for y, pred of shape [N, H*D]."""
     N = y.shape[0]
@@ -92,12 +118,14 @@ def _r2_per_head(y, pred, n_heads):
 
 
 @torch.no_grad()
-def r2_matrix(src_feats, tgt_feats, lam, n_heads, device, val_frac=0.25):
+def r2_matrix(src_feats, tgt_feats, lam, n_heads, device, val_frac=0.25, label="scoring layer pairs",
+              progress=True):
     """R^2[s, t]: how well source layer s alone predicts target layer t (ridge, held-out)."""
     N = src_feats[0].shape[0]
     n_tr = int(N * (1 - val_frac))
     R = torch.zeros(len(src_feats), len(tgt_feats))
     tgt = [t.to(device) for t in tgt_feats]
+    bar = Progress(len(src_feats), label, progress)
     for s, X in enumerate(src_feats):
         X = X.to(device).double()
         Xtr, Xva = X[:n_tr], X[n_tr:]
@@ -110,6 +138,7 @@ def r2_matrix(src_feats, tgt_feats, lam, n_heads, device, val_frac=0.25):
             my = Ytr.mean(0, keepdim=True)
             W = torch.cholesky_solve((Xtr - mu).T @ (Ytr - my) / n_tr, L)
             R[s, t] = _r2_per_head(Yva, (Xva - mu) @ W + my, n_heads)
+        bar.step()
     return R
 
 
@@ -126,7 +155,7 @@ def _kv_features(model, cfg, ids):
 
 @torch.no_grad()
 def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=4,
-               group_size=4, device=None, log=print):
+               group_size=4, device=None, log=print, progress=True):
     """Fit a src->tgt mapper.
 
     src, tgt: (model, config) tuples.  calib_ids: list of LongTensor [1, T] token sequences.
@@ -140,7 +169,9 @@ def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=
     Ls, Lt = cs.num_hidden_layers, ct.num_hidden_layers
 
     # 1) choose source layers for every target layer, from a small subset ---------
+    log(f"  running on {device}")
     log(f"  selecting top-{k} source layers using {min(n_select_seqs, len(train))} sequences")
+    bar = Progress(min(n_select_seqs, len(train)), "reading texts", progress)
     sk, sv, tk, tv = [[] for _ in range(Ls)], [[] for _ in range(Ls)], [[] for _ in range(Lt)], [[] for _ in range(Lt)]
     for ids in train[:n_select_seqs]:
         fsk, fsv = _kv_features(ms, cs, ids)
@@ -149,9 +180,10 @@ def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=
             sk[l].append(fsk[l].half().cpu()); sv[l].append(fsv[l].half().cpu())
         for l in range(Lt):
             tk[l].append(ftk[l].half().cpu()); tv[l].append(ftv[l].half().cpu())
+        bar.step()
     cat = lambda xs: [torch.cat(x).float() for x in xs]
-    Rk = r2_matrix(cat(sk), cat(tk), lam, H, device)
-    Rv = r2_matrix(cat(sv), cat(tv), lam, H, device)
+    Rk = r2_matrix(cat(sk), cat(tk), lam, H, device, label="scoring key layers", progress=progress)
+    Rv = r2_matrix(cat(sv), cat(tv), lam, H, device, label="scoring value layers", progress=progress)
     del sk, sv, tk, tv
     sel_k, sel_v = select_layers(Rk, k), select_layers(Rv, k)
 
@@ -169,6 +201,7 @@ def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=
                                       xy=torch.zeros(din, dout, device=device, dtype=torch.float64),
                                       sx=torch.zeros(din, device=device, dtype=torch.float64),
                                       sy=torch.zeros(dout, device=device, dtype=torch.float64), n=0)
+        bar = Progress(len(train), "texts", progress)
         for ids in train:
             fsk, fsv = _kv_features(ms, cs, ids)
             ftk, ftv = _kv_features(mt, ct, ids)
@@ -179,6 +212,7 @@ def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=
                     a = acc[(t, kind)]
                     a["xx"] += (X.T @ X).double(); a["xy"] += (X.T @ Y).double()
                     a["sx"] += X.sum(0).double(); a["sy"] += Y.sum(0).double(); a["n"] += X.shape[0]
+            bar.step()
         for t in group:
             for kind in ("k", "v"):
                 a = acc.pop((t, kind))
@@ -200,6 +234,8 @@ def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=
     # 3) held-out check -----------------------------------------------------------
     m = mapper.to(device)
     r2k, r2v = [[] for _ in range(Lt)], [[] for _ in range(Lt)]
+    log("  checking on held-out texts")
+    bar = Progress(len(val), "texts", progress)
     for ids in val:
         fsk, fsv = _kv_features(ms, cs, ids)
         ftk, ftv = _kv_features(mt, ct, ids)
@@ -208,6 +244,7 @@ def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=
             xv = torch.cat([fsv[s].to(device) for s in sel_v[t]], -1)
             r2k[t].append(_r2_per_head(ftk[t].to(device), xk @ m.Wk[t] + m.bk[t], H))
             r2v[t].append(_r2_per_head(ftv[t].to(device), xv @ m.Wv[t] + m.bv[t], H))
+        bar.step()
     avg = lambda xs: [sum(x) / len(x) for x in xs]
     report = dict(val_r2_k=avg(r2k), val_r2_v=avg(r2v), sel_k=sel_k, sel_v=sel_v,
                   single_layer_r2_k=Rk.tolist(), single_layer_r2_v=Rv.tolist())

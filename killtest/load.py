@@ -46,6 +46,11 @@ def load_pair(small: str, large: str, devices=None):
 
     ds, dl = pick_devices(devices)
     print(f"loading {small} on {ds} and {large} on {dl}")
+    if "cpu" in (str(ds), str(dl)):
+        print("\n[warning] running on CPU: PyTorch can't see a GPU. Fitting and the kill test will take HOURS.\n"
+              "  Check: python -c \"import torch; print(torch.cuda.is_available())\"\n"
+              "  On Windows, plain `pip install torch` gives a CPU-only build; get the CUDA build from\n"
+              "  https://pytorch.org/get-started/locally/ (only helps if the machine has an NVIDIA GPU).\n")
     ms, ml = load_model(small, ds), load_model(large, dl)
     check_matched_kv(ms.config, ml.config)
     tok_s, tok_l = AutoTokenizer.from_pretrained(small), AutoTokenizer.from_pretrained(large)
