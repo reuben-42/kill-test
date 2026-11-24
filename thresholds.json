@@ -1,0 +1,9 @@
+{
+  "_note": "Agree on these BEFORE running the kill test, and don't change them after seeing results.",
+  "late_start_turn": 50,
+  "drop_below_pp": 3.0,
+  "sessions_differ_p": 0.05,
+  "signal_window": 5,
+  "signal_horizon": 3,
+  "min_signal_spearman": 0.3
+}

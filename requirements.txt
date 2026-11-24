@@ -1,0 +1,6 @@
+torch>=2.2
+transformers>=4.51   # Qwen3 support
+datasets>=2.19
+numpy
+matplotlib
+pytest
