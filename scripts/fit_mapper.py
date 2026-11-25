@@ -6,6 +6,7 @@ Writes runs/<pair>/mapper_S2L.pt, mapper_L2S.pt, fit reports and run_config.json
 """
 import argparse
 import os
+import shutil
 import sys
 import time
 
@@ -25,6 +26,8 @@ def main():
     ap.add_argument("--devices", help="where the models live: 'cuda', 'cuda:0,cuda:1' or 'cuda,cpu' (small, large)")
     ap.add_argument("--fit-device", help="where the fitting math runs (default: a GPU if any is used)")
     ap.add_argument("--keep-cache", action="store_true", help="keep the calibration notes on disk afterwards")
+    ap.add_argument("--cache-dir", help="where the temporary calibration notes go (default <out>/calib_cache); "
+                                        "point it at a big local disk, e.g. /tmp/$USER-cache")
     ap.add_argument("--n-calib", type=int, default=64, help="calibration sequences (Heo et al. used 500)")
     ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--k", type=int, default=8, help="source layers per target layer")
@@ -45,10 +48,23 @@ def main():
     calib = load_calibration(tok, a.n_calib, a.seq_len, text_file=a.calib_text_file)
 
     fit_device = a.fit_device or next((str(m.device) for m in models.values() if m.device.type == "cuda"), "cpu")
-    cache = os.path.join(out, "calib_cache")
-    gb = sum(2 * m.config.num_hidden_layers * m.config.num_key_value_heads * m.config.head_dim * 2
-             for m in models.values()) * a.n_calib * a.seq_len / 1e9
-    print(f"\nstep A: run each model over the texts once and save its notes ({gb:.1f} GB on disk in {cache})")
+    cache = a.cache_dir or os.path.join(out, "calib_cache")
+    per_tok = sum(2 * m.config.num_hidden_layers * m.config.num_key_value_heads * m.config.head_dim * 2
+                  for m in models.values())
+    cache_gb = per_tok * a.n_calib * a.seq_len / 1e9
+    hd = models["S"].config.num_key_value_heads * models["S"].config.head_dim
+    mapper_gb = sum(2 * m.config.num_hidden_layers * (min(a.k, o.config.num_hidden_layers) * hd + 1) * hd * 4
+                    for m, o in ((models["L"], models["S"]), (models["S"], models["L"]))) / 1e9
+    print(f"\ndisk space needed: ~{cache_gb:.1f} GB of temporary notes in {cache} (deleted at the end)\n"
+          f"                   ~{mapper_gb:.1f} GB for the two translators in {out}")
+    for path, need in {cache: cache_gb, out: mapper_gb}.items():
+        os.makedirs(path, exist_ok=True)
+        free = shutil.disk_usage(path).free / 1e9
+        if free < need * 1.1:
+            print(f"[warning] only {free:.1f} GB free at {path}. Use --cache-dir / --out on a bigger disk, "
+                  f"or fewer texts (--n-calib).")
+    print("(school computers often also limit each person's home folder below what 'free' shows: check `quota -s`)")
+    print(f"\nstep A: run each model over the texts once and save its notes")
     store = FeatureStore(models, calib, cache_dir=cache)
     try:
         for src, tgt in (("S", "L"), ("L", "S")):
@@ -57,7 +73,12 @@ def main():
             ms, mt = models[src], models[tgt]
             mapper, report = fit_mapper((ms, ms.config), (mt, mt.config), k=a.k, lam=a.lam,
                                         group_size=a.group_size, device=fit_device, store=store, names=(src, tgt))
-            mapper.save(os.path.join(out, f"mapper_{src}2{tgt}.pt"))
+            try:
+                mapper.save(os.path.join(out, f"mapper_{src}2{tgt}.pt"))
+            except (RuntimeError, OSError) as e:
+                raise SystemExit(f"\ncould not save the translator to {out}: {e}\n"
+                                 "This usually means the disk (or your storage quota) is full. Rerun with --out "
+                                 "and/or --cache-dir on a disk with more space.") from e
             save_json(report, os.path.join(out, f"fit_report_{src}2{tgt}.json"))
             print(f"  held-out R^2: keys {report['mean_val_r2_k']:.3f}, values {report['mean_val_r2_v']:.3f} "
                   f"({time.time() - t0:.0f}s)")

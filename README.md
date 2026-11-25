@@ -52,11 +52,16 @@ python scripts/analyze.py       --run runs/0.6b-1.7b
 ```
 
 - Fitting runs each model over the calibration texts **once** and keeps their notes on disk while it works:
-  about 15 GB for `0.6b-1.7b` with the default 64 texts. Short on disk space? Add `--n-calib 32` (about half),
-  or put the run folder on a bigger disk with `--out /path/with/space/run`.
+  about 15 GB for `0.6b-1.7b` with the default 64 texts, plus ~3.8 GB for the two saved translators.
 - `--devices` is remembered in `run_config.json`, so steps 2–3 reuse it.
 - Try `run_kill_test.py --n-sessions 2` first: it prints seconds per chat, so you can estimate the full run.
 - The 1.7B model needs about 7 GB of normal RAM on the CPU (it runs in float32 there).
+
+### Out of disk space / `basic_ios::clear: iostream error` when saving
+
+School home folders usually have a storage quota (check `quota -s`). Put the big files on the machine's local disk:
+`--cache-dir /tmp/$USER-cache --out /tmp/$USER-run`, then pass `--run /tmp/$USER-run` to the later steps.
+Copy `results.jsonl` and `analysis/` back home at the end, because `/tmp` can be wiped. Or use fewer texts with `--n-calib 32`.
 
 ### pytest crashes with `substitute_in_graph expects a function ... ansible`
 
