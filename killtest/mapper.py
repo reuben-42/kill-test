@@ -15,6 +15,7 @@ Details the paper does not pin down (our choices, easy to change):
 """
 from __future__ import annotations
 
+import os
 import time
 
 import torch
@@ -117,28 +118,94 @@ def _r2_per_head(y, pred, n_heads):
     return (1 - sse / sst).mean().item()
 
 
+class FeatureStore:
+    """Every model's position-free KV features on the calibration texts, computed ONCE.
+
+    Layout per model and kind ('k'/'v'): [n_layers, n_tokens, H*D] in float16, kept in RAM,
+    or in files on disk when `cache_dir` is given (needed for real models: several GB).
+    Fitting then reads from here instead of re-running the models for every layer group.
+    """
+
+    def __init__(self, models: dict, calib_ids: list, cache_dir=None, progress=True, log=print):
+        import numpy as np
+
+        self.cache_dir, self.arrays = cache_dir, {}
+        lens = [ids.shape[1] for ids in calib_ids]
+        self.offsets = [sum(lens[:i]) for i in range(len(lens) + 1)]
+        N = self.offsets[-1]
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+        for name, model in models.items():
+            cfg = model.config
+            L, HD = cfg.num_hidden_layers, cfg.num_key_value_heads * head_dim(cfg)
+            for kind in ("k", "v"):
+                if cache_dir:
+                    path = os.path.join(cache_dir, f"{name}_{kind}.f16")
+                    self.arrays[(name, kind)] = np.memmap(path, dtype=np.float16, mode="w+", shape=(L, N, HD))
+                else:
+                    self.arrays[(name, kind)] = torch.empty((L, N, HD), dtype=torch.float16)
+            log(f"  reading calibration texts with {name} ({model.device})")
+            bar = Progress(len(calib_ids), "texts", progress)
+            for i, ids in enumerate(calib_ids):
+                fk, fv = _kv_features(model, cfg, ids)
+                a, b = self.offsets[i], self.offsets[i + 1]
+                for kind, feats in (("k", fk), ("v", fv)):
+                    for l, f in enumerate(feats):
+                        h = f.half()
+                        if not torch.isfinite(h).all():
+                            raise OverflowError(f"{name} layer {l} {kind}: values too large for float16")
+                        if cache_dir:
+                            self.arrays[(name, kind)][l, a:b] = h.cpu().numpy()
+                        else:
+                            self.arrays[(name, kind)][l, a:b] = h.cpu()
+                bar.step()
+        self.n_texts = len(calib_ids)
+
+    def get(self, name, kind, layer, a, b, device) -> torch.Tensor:
+        x = self.arrays[(name, kind)][layer, a:b]
+        x = torch.from_numpy(x.copy()) if not isinstance(x, torch.Tensor) else x
+        return x.to(device).float()
+
+    def span(self, first_text, last_text):
+        """Token range covering texts [first_text, last_text)."""
+        return self.offsets[first_text], self.offsets[last_text]
+
+    def close(self):
+        import gc
+        import shutil
+
+        self.arrays.clear()
+        gc.collect()  # Windows can't delete a file that is still memory-mapped
+        if self.cache_dir:
+            shutil.rmtree(self.cache_dir, ignore_errors=True)
+
+
 @torch.no_grad()
-def r2_matrix(src_feats, tgt_feats, lam, n_heads, device, val_frac=0.25, label="scoring layer pairs",
-              progress=True):
-    """R^2[s, t]: how well source layer s alone predicts target layer t (ridge, held-out)."""
-    N = src_feats[0].shape[0]
+def r2_matrix(get_src, n_src, get_tgt, n_tgt, lam, n_heads, device, val_frac=0.25,
+              label="scoring layer pairs", progress=True):
+    """R^2[s, t]: how well source layer s alone predicts target layer t (ridge, held-out).
+
+    Products in float32 (fast on any GPU); the small 1024x1024 solves in float64.
+    """
+    tgt = [get_tgt(t).half() for t in range(n_tgt)]  # kept on `device` as float16
+    N = tgt[0].shape[0]
     n_tr = int(N * (1 - val_frac))
-    R = torch.zeros(len(src_feats), len(tgt_feats))
-    tgt = [t.to(device) for t in tgt_feats]
-    bar = Progress(len(src_feats), label, progress)
-    for s, X in enumerate(src_feats):
-        X = X.to(device).double()
-        Xtr, Xva = X[:n_tr], X[n_tr:]
-        mu = Xtr.mean(0, keepdim=True)
-        A = (Xtr - mu).T @ (Xtr - mu) / n_tr + lam * torch.eye(X.shape[1], device=device, dtype=X.dtype)
-        L = torch.linalg.cholesky(A)
-        for t, Y in enumerate(tgt):
-            Y = Y.double()
-            Ytr, Yva = Y[:n_tr], Y[n_tr:]
-            my = Ytr.mean(0, keepdim=True)
-            W = torch.cholesky_solve((Xtr - mu).T @ (Ytr - my) / n_tr, L)
-            R[s, t] = _r2_per_head(Yva, (Xva - mu) @ W + my, n_heads)
+    R = torch.zeros(n_src, n_tgt)
+    bar = Progress(n_src, label, progress)
+    for s in range(n_src):
+        X = get_src(s)
+        mu = X[:n_tr].mean(0, keepdim=True)
+        Xtr, Xva = X[:n_tr] - mu, X[n_tr:] - mu
+        A = (Xtr.T @ Xtr).double() / n_tr
+        A += lam * torch.eye(A.shape[0], device=device, dtype=A.dtype)
+        Lc = torch.linalg.cholesky(A)
+        for t in range(n_tgt):
+            Y = tgt[t].float()
+            my = Y[:n_tr].mean(0, keepdim=True)
+            W = torch.cholesky_solve((Xtr.T @ (Y[:n_tr] - my)).double() / n_tr, Lc).float()
+            R[s, t] = _r2_per_head(Y[n_tr:], Xva @ W + my, n_heads)
         bar.step()
+    del tgt
     return R
 
 
@@ -154,101 +221,106 @@ def _kv_features(model, cfg, ids):
 
 
 @torch.no_grad()
-def fit_mapper(src, tgt, calib_ids, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=4,
-               group_size=4, device=None, log=print, progress=True):
+def fit_mapper(src, tgt, calib_ids=None, k=8, lam=0.01, n_select_seqs=16, n_val_seqs=4,
+               group_size=4, device=None, log=print, progress=True, store=None, names=("src", "tgt")):
     """Fit a src->tgt mapper.
 
-    src, tgt: (model, config) tuples.  calib_ids: list of LongTensor [1, T] token sequences.
-    The last `n_val_seqs` sequences are held out to report validation R^2.
+    src, tgt: (model, config) tuples. Either pass `calib_ids` (list of LongTensor [1, T]) or a
+    ready FeatureStore `store` plus the two models' `names` in it. The last `n_val_seqs` texts
+    are held out to report validation R^2. `device` = where the math runs (use the GPU).
     """
     (ms, cs), (mt, ct) = src, tgt
-    device = device or mt.device
+    device = torch.device(device or mt.device)
+    own_store = store is None
+    if own_store:
+        names = ("src", "tgt") if ms is not mt else ("m", "m")
+        store = FeatureStore({names[0]: ms, names[1]: mt}, calib_ids, progress=progress, log=log)
+    sn, tn = names
     H = ct.num_key_value_heads
-    n_val_seqs = min(n_val_seqs, max(1, len(calib_ids) // 4))
-    train, val = calib_ids[:-n_val_seqs], calib_ids[-n_val_seqs:]
+    n_texts = store.n_texts
+    n_val_seqs = min(n_val_seqs, max(1, n_texts // 4))
+    n_train = n_texts - n_val_seqs
     Ls, Lt = cs.num_hidden_layers, ct.num_hidden_layers
+    log(f"  math runs on {device}")
 
     # 1) choose source layers for every target layer, from a small subset ---------
-    log(f"  running on {device}")
-    log(f"  selecting top-{k} source layers using {min(n_select_seqs, len(train))} sequences")
-    bar = Progress(min(n_select_seqs, len(train)), "reading texts", progress)
-    sk, sv, tk, tv = [[] for _ in range(Ls)], [[] for _ in range(Ls)], [[] for _ in range(Lt)], [[] for _ in range(Lt)]
-    for ids in train[:n_select_seqs]:
-        fsk, fsv = _kv_features(ms, cs, ids)
-        ftk, ftv = _kv_features(mt, ct, ids)
-        for l in range(Ls):
-            sk[l].append(fsk[l].half().cpu()); sv[l].append(fsv[l].half().cpu())
-        for l in range(Lt):
-            tk[l].append(ftk[l].half().cpu()); tv[l].append(ftv[l].half().cpu())
-        bar.step()
-    cat = lambda xs: [torch.cat(x).float() for x in xs]
-    Rk = r2_matrix(cat(sk), cat(tk), lam, H, device, label="scoring key layers", progress=progress)
-    Rv = r2_matrix(cat(sv), cat(tv), lam, H, device, label="scoring value layers", progress=progress)
-    del sk, sv, tk, tv
-    sel_k, sel_v = select_layers(Rk, k), select_layers(Rv, k)
+    n_sel = min(n_select_seqs, n_train)
+    a, b = store.span(0, n_sel)
+    log(f"  choosing the top-{k} source layers for each target layer ({n_sel} texts)")
+    sel = {}
+    R = {}
+    for kind in ("k", "v"):
+        R[kind] = r2_matrix(lambda s: store.get(sn, kind, s, a, b, device), Ls,
+                            lambda t: store.get(tn, kind, t, a, b, device), Lt, lam, H, device,
+                            label=f"scoring {'key' if kind == 'k' else 'value'} layers", progress=progress)
+        sel[kind] = select_layers(R[kind], k)
+    sel_k, sel_v = sel["k"], sel["v"]
 
-    # 2) closed-form ridge per target layer, streamed over calibration -----------
+    # 2) closed-form ridge per target layer, streamed over the training texts -----
     Wk, bk, Wv, bv = [None] * Lt, [None] * Lt, [None] * Lt, [None] * Lt
     groups = [list(range(i, min(i + group_size, Lt))) for i in range(0, Lt, group_size)]
     for gi, group in enumerate(groups):
         log(f"  fitting target layers {group[0]}-{group[-1]} ({gi + 1}/{len(groups)})")
         acc = {}
         for t in group:
-            for kind, sel in (("k", sel_k[t]), ("v", sel_v[t])):
-                din = len(sel) * cs.num_key_value_heads * head_dim(cs)
+            for kind in ("k", "v"):
+                din = len(sel[kind][t]) * cs.num_key_value_heads * head_dim(cs)
                 dout = H * head_dim(ct)
                 acc[(t, kind)] = dict(xx=torch.zeros(din, din, device=device, dtype=torch.float64),
                                       xy=torch.zeros(din, dout, device=device, dtype=torch.float64),
                                       sx=torch.zeros(din, device=device, dtype=torch.float64),
                                       sy=torch.zeros(dout, device=device, dtype=torch.float64), n=0)
-        bar = Progress(len(train), "texts", progress)
-        for ids in train:
-            fsk, fsv = _kv_features(ms, cs, ids)
-            ftk, ftv = _kv_features(mt, ct, ids)
+        bar = Progress(n_train, "texts", progress)
+        for i in range(n_train):
+            a, b = store.span(i, i + 1)
             for t in group:
-                for kind, sel, fs, ft in (("k", sel_k[t], fsk, ftk), ("v", sel_v[t], fsv, ftv)):
-                    X = torch.cat([fs[s].to(device) for s in sel], dim=-1)
-                    Y = ft[t].to(device)
-                    a = acc[(t, kind)]
-                    a["xx"] += (X.T @ X).double(); a["xy"] += (X.T @ Y).double()
-                    a["sx"] += X.sum(0).double(); a["sy"] += Y.sum(0).double(); a["n"] += X.shape[0]
+                for kind in ("k", "v"):
+                    X = torch.cat([store.get(sn, kind, s, a, b, device) for s in sel[kind][t]], dim=-1)
+                    Y = store.get(tn, kind, t, a, b, device)
+                    ac = acc[(t, kind)]
+                    ac["xx"].add_(X.T @ X); ac["xy"].add_(X.T @ Y)  # float32 product, float64 running sum
+                    ac["sx"].add_(X.sum(0)); ac["sy"].add_(Y.sum(0)); ac["n"] += X.shape[0]
+                    del X, Y
             bar.step()
         for t in group:
             for kind in ("k", "v"):
-                a = acc.pop((t, kind))
-                n = a["n"]; mx = a["sx"] / n; my = a["sy"] / n
-                cov = a["xx"] / n - torch.outer(mx, mx)
-                cxy = a["xy"] / n - torch.outer(mx, my)
-                cov += lam * torch.eye(cov.shape[0], device=device, dtype=cov.dtype)
+                ac = acc.pop((t, kind))
+                n = ac["n"]; mx = ac["sx"] / n; my = ac["sy"] / n
+                cov = ac.pop("xx").div_(n).sub_(torch.outer(mx, mx))
+                cov.diagonal().add_(lam)
+                cxy = ac.pop("xy").div_(n).sub_(torch.outer(mx, my))
                 W = torch.linalg.solve(cov, cxy)
-                b = my - mx @ W
+                del cov, cxy
+                bias = my - mx @ W
                 if kind == "k":
-                    Wk[t], bk[t] = W.float().cpu(), b.float().cpu()
+                    Wk[t], bk[t] = W.float().cpu(), bias.float().cpu()
                 else:
-                    Wv[t], bv[t] = W.float().cpu(), b.float().cpu()
+                    Wv[t], bv[t] = W.float().cpu(), bias.float().cpu()
+                del W
         del acc
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     mapper = Mapper(sel_k, sel_v, Wk, bk, Wv, bv, cs, ct,
-                    meta=dict(k=k, lam=lam, n_train_seqs=len(train), n_val_seqs=len(val)))
+                    meta=dict(k=k, lam=lam, n_train_seqs=n_train, n_val_seqs=n_val_seqs))
 
-    # 3) held-out check -----------------------------------------------------------
-    m = mapper.to(device)
-    r2k, r2v = [[] for _ in range(Lt)], [[] for _ in range(Lt)]
+    # 3) held-out check, one target layer at a time (keeps GPU memory small) -------
     log("  checking on held-out texts")
-    bar = Progress(len(val), "texts", progress)
-    for ids in val:
-        fsk, fsv = _kv_features(ms, cs, ids)
-        ftk, ftv = _kv_features(mt, ct, ids)
-        for t in range(Lt):
-            xk = torch.cat([fsk[s].to(device) for s in sel_k[t]], -1)
-            xv = torch.cat([fsv[s].to(device) for s in sel_v[t]], -1)
-            r2k[t].append(_r2_per_head(ftk[t].to(device), xk @ m.Wk[t] + m.bk[t], H))
-            r2v[t].append(_r2_per_head(ftv[t].to(device), xv @ m.Wv[t] + m.bv[t], H))
+    a, b = store.span(n_train, n_texts)
+    r2 = {"k": [], "v": []}
+    W_all = {"k": (Wk, bk), "v": (Wv, bv)}
+    bar = Progress(Lt, "target layers", progress)
+    for t in range(Lt):
+        for kind in ("k", "v"):
+            X = torch.cat([store.get(sn, kind, s, a, b, device) for s in sel[kind][t]], -1)
+            W, bias = W_all[kind][0][t].to(device), W_all[kind][1][t].to(device)
+            r2[kind].append(_r2_per_head(store.get(tn, kind, t, a, b, device), X @ W + bias, H))
         bar.step()
-    avg = lambda xs: [sum(x) / len(x) for x in xs]
-    report = dict(val_r2_k=avg(r2k), val_r2_v=avg(r2v), sel_k=sel_k, sel_v=sel_v,
-                  single_layer_r2_k=Rk.tolist(), single_layer_r2_v=Rv.tolist())
-    report["mean_val_r2_k"] = sum(report["val_r2_k"]) / Lt
-    report["mean_val_r2_v"] = sum(report["val_r2_v"]) / Lt
+    if own_store:
+        store.close()
+    report = dict(val_r2_k=r2["k"], val_r2_v=r2["v"], sel_k=sel_k, sel_v=sel_v,
+                  single_layer_r2_k=R["k"].tolist(), single_layer_r2_v=R["v"].tolist())
+    report["mean_val_r2_k"] = sum(r2["k"]) / Lt
+    report["mean_val_r2_v"] = sum(r2["v"]) / Lt
     mapper.meta["report"] = {k_: report[k_] for k_ in ("mean_val_r2_k", "mean_val_r2_v")}
     return mapper, report

@@ -13,7 +13,7 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 from killtest.analysis import analyze
 from killtest.data import make_sessions, tokenize_session
 from killtest.kv import KV, flat_features, forward
-from killtest.mapper import Mapper, fit_mapper
+from killtest.mapper import FeatureStore, Mapper, fit_mapper
 from killtest.runner import run_session, single_handoff
 
 
@@ -122,3 +122,20 @@ def test_end_to_end_two_different_models(tmp_path):
     assert res["decision"].split()[0] in {"DROP", "PIVOT", "GO"}
     for f in ("fig1_drift_vs_turn.png", "fig2_by_answerer.png", "fig3_signal.png", "summary.json"):
         assert (tmp_path / f).exists()
+
+
+def test_disk_cache_matches_memory(tmp_path):
+    """The on-disk feature cache (used for real models) must give the same translator as RAM."""
+    S, L = tiny_model(layers=2, hidden=64, seed=0), tiny_model(layers=3, hidden=96, seed=1)
+    torch.manual_seed(3)
+    calib = [torch.randint(0, 128, (1, 40)) for _ in range(8)]
+    kw = dict(k=2, n_select_seqs=4, device="cpu", log=lambda *_: None, progress=False)
+    m_ram, _ = fit_mapper((S, S.config), (L, L.config), calib, **kw)
+    store = FeatureStore({"S": S, "L": L}, calib, cache_dir=str(tmp_path / "cache"), progress=False,
+                         log=lambda *_: None)
+    m_disk, _ = fit_mapper((S, S.config), (L, L.config), store=store, names=("S", "L"), group_size=1, **kw)
+    store.close()
+    assert not (tmp_path / "cache").exists()
+    assert m_ram.sel_k == m_disk.sel_k
+    for a, b in zip(m_ram.Wk + m_ram.Wv, m_disk.Wk + m_disk.Wv):
+        assert torch.allclose(a, b, atol=1e-4)

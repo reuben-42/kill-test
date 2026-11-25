@@ -35,7 +35,9 @@ def main():
     ap.add_argument("--split", default="validation")
     ap.add_argument("--coqa-file", help="local JSON copy of CoQA (see scripts/download_data.py)")
     ap.add_argument("--devices")
-    ap.add_argument("--mapper-dtype", default="float32", choices=["float32", "bfloat16"])
+    ap.add_argument("--mapper-dtype", default="float32", choices=["float32", "bfloat16"],
+                    help="bfloat16 halves the translators' memory (use it on small GPUs)")
+    ap.add_argument("--mapper-device", help="put both translators here, e.g. 'cuda' (default: next to the receiving model)")
     a = ap.parse_args()
 
     cfg = load_json(os.path.join(a.run, "run_config.json"))
@@ -44,7 +46,7 @@ def main():
     mappers = {}
     for src, tgt in (("S", "L"), ("L", "S")):
         mp = Mapper.load(os.path.join(a.run, f"mapper_{src}2{tgt}.pt"), models[src].config, models[tgt].config)
-        mappers[(src, tgt)] = mp.to(models[tgt].device, dt)
+        mappers[(src, tgt)] = mp.to(a.mapper_device or models[tgt].device, dt)
 
     sessions = make_sessions(load_coqa(a.split, a.coqa_file), a.n_sessions, a.stories_per_session, a.max_q, a.seed)
     save_json(dict(args=vars(a), sessions=sessions), os.path.join(a.run, "sessions.json"))

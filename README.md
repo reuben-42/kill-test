@@ -16,7 +16,7 @@ The translator is the closed-form ridge mapper from Heo et al. ([arXiv 2608.0389
 
 ```bash
 pip install -r requirements.txt
-pytest -q                                            # ~10 s on CPU, checks the plumbing with tiny random models
+python -m pytest -q                                  # ~10 s on CPU, checks the plumbing with tiny random models
 
 # 0. Agree on thresholds.json FIRST (what counts as drop / pivot / go). Don't change it after.
 python scripts/fit_mapper.py    --pair 4b-8b         # 1. fit translators: small->large and large->small
@@ -33,12 +33,35 @@ All pairs below are "matched-KV" (8 KV heads, head size 128), which the mapper n
 
 | `--pair` | Models | Rough GPU memory |
 |---|---|---|
-| `0.6b-1.7b` | Qwen3-0.6B ↔ 1.7B | ~16 GB |
+| `0.6b-1.7b` | Qwen3-0.6B ↔ 1.7B | ~16 GB, or 4–8 GB with the large model on the CPU (below) |
 | `1.7b-4b` | Qwen3-1.7B ↔ 4B | ~24 GB (add `--mapper-dtype bfloat16` to steps 2–3 if tight) |
 | `4b-8b` (default) | Qwen3-4B ↔ 8B | ~40 GB |
 | `8b-32b` | Qwen3-8B ↔ 32B (a pair Heo et al. tested) | 80 GB+, or two GPUs: `--devices cuda:0,cuda:1` |
 
 Out of memory while fitting? Use `--group-size 2` (or 1). These numbers are estimates: about 2 bytes per model parameter, plus the translators and fitting buffers.
+
+### Small GPU (under ~8 GB): small model on the GPU, large model on the CPU
+
+Results are the same; only speed changes. The 1.7B model on the CPU makes its turns slow, so expect hours (an overnight run).
+
+```bash
+python scripts/fit_mapper.py    --pair 0.6b-1.7b --devices cuda,cpu --group-size 1
+python scripts/check_handoff.py --run runs/0.6b-1.7b --mapper-dtype bfloat16 --mapper-device cuda
+python scripts/run_kill_test.py --run runs/0.6b-1.7b --mapper-dtype bfloat16 --mapper-device cuda
+python scripts/analyze.py       --run runs/0.6b-1.7b
+```
+
+- Fitting runs each model over the calibration texts **once** and keeps their notes on disk while it works:
+  about 15 GB for `0.6b-1.7b` with the default 64 texts. Short on disk space? Add `--n-calib 32` (about half),
+  or put the run folder on a bigger disk with `--out /path/with/space/run`.
+- `--devices` is remembered in `run_config.json`, so steps 2–3 reuse it.
+- Try `run_kill_test.py --n-sessions 2` first: it prints seconds per chat, so you can estimate the full run.
+- The 1.7B model needs about 7 GB of normal RAM on the CPU (it runs in float32 there).
+
+### pytest crashes with `substitute_in_graph expects a function ... ansible`
+
+Another pytest add-on on that computer (Ansible's) breaks PyTorch. Our tests need no add-ons, so turn them off:
+`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`
 
 ### GPU nodes without internet (common on university clusters)
 

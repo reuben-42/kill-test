@@ -27,7 +27,9 @@ def main():
     ap.add_argument("--n", type=int, default=50, help="number of stories")
     ap.add_argument("--devices")
     ap.add_argument("--coqa-file", help="local JSON copy of CoQA (see scripts/download_data.py)")
-    ap.add_argument("--mapper-dtype", default="float32", choices=["float32", "bfloat16"])
+    ap.add_argument("--mapper-dtype", default="float32", choices=["float32", "bfloat16"],
+                    help="bfloat16 halves the translators' memory (use it on small GPUs)")
+    ap.add_argument("--mapper-device", help="put both translators here, e.g. 'cuda' (default: next to the receiving model)")
     a = ap.parse_args()
 
     cfg = load_json(os.path.join(a.run, "run_config.json"))
@@ -37,7 +39,7 @@ def main():
     report = {}
     for src, tgt in (("S", "L"), ("L", "S")):
         mp = Mapper.load(os.path.join(a.run, f"mapper_{src}2{tgt}.pt"), models[src].config, models[tgt].config)
-        mp = mp.to(models[tgt].device, dt)
+        mp = mp.to(a.mapper_device or models[tgt].device, dt)
         rows = []
         for s in stories:
             ctx = tok.encode(HEADER + f"Story:\n{s['story'].strip()}\n\n")
