@@ -43,6 +43,19 @@ The translator is the closed-form ridge mapper from Heo et al. ([arXiv 2608.0389
 
 5. **"Large model answering" shows more KL**, but bigger models make sharper predictions, so KL isn't directly comparable across the two models. This does not contradict Heo et al.'s finding that large → small drift grows faster.
 
+### Why a fixed refresh schedule is enough (and what that doesn't tell us)
+
+Two findings are easy to mix up:
+
+| Finding | What it tells us |
+|---|---|
+| **Chats drift alike** (p ≈ 0.5) | A smart refresh can't beat a timer: there is no "this chat is worse, refresh it early" to detect. **This is why a fixed schedule is enough.** |
+| **Drift is mostly up front, then roughly flat** | The *shape* of drift over time. Not yet confirmed (paired growth test still to do). |
+
+A fixed schedule would be enough even if drift grew a lot over time, as long as every chat grew at the same speed; we would just refresh more often. Analogy: if every car's oil gets dirty at exactly the same rate, a "change every 5,000 km" sticker works as well as an oil sensor.
+
+What the kill test does **not** tell us: *how often* to refresh, or whether a refresh is worth its cost. That is a separate cost-vs-quality trade-off.
+
 ### Caveats
 
 - One small model pair; larger pairs may behave differently.
@@ -54,6 +67,7 @@ The translator is the closed-form ridge mapper from Heo et al. ([arXiv 2608.0389
 The long-chat refresh idea looks weak. The bigger effect is the **cost of each single handoff**, which is the group's original question (should *this* handoff trust the translated cache?). Open questions for that:
 
 - Is the up-front 7 pp a **weak translator** (more calibration data, nonlinear mapper) or **the models genuinely representing things differently**? Re-fitting with `--n-calib 256` and comparing would start to separate the two.
+- **Does the up-front cost come from one big page?** Each chat starts with a long story. In segment-wise, the model that didn't read the story gets it as translated notes. If most of the early ~7 pp comes from that one big translated page rather than the many short Q&A pages, then *what* was translated matters more than *how many turns* have passed, and refreshing right after a long document is translated may be what pays off. Test: compare drift on turns right after a new story arrives with turns mid-story, or translate the story with re-reading and only the Q&A pages with the translator.
 - A signal for a *constant* problem needs a baseline that isn't itself blurry, e.g. the sending model's own surprise on the same text.
 - Run the paired growth test above before claiming anything about build-up.
 
