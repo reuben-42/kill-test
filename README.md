@@ -12,6 +12,51 @@ We play long CoQA chats three ways and compare them turn by turn:
 
 The translator is the closed-form ridge mapper from Heo et al. ([arXiv 2608.03893](https://arxiv.org/abs/2608.03893)).
 
+## Findings: first run (November 24, 2026)
+
+**Decision by the pre-agreed rules: PIVOT.** Translation error is mostly a cost paid up front, it is about the same in every chat, and our cheap warning signal can't see it. A "smart refresh over long chats" policy has little room to beat a fixed schedule.
+
+**Setup:** Qwen3-0.6B ↔ Qwen3-1.7B on one 12 GB GPU · 20 chats of 48–60 turns (4 CoQA stories each), models alternating every turn, large model first · translator fit on 64 FineWeb-Edu texts of 1,024 tokens (k = 8), stored in bfloat16 · thresholds as in `thresholds.json`.
+
+| | Segment-wise | Naive re-translation |
+|---|---|---|
+| F1 drift vs. always re-reading, first 10 turns | +7.2 pp | +38.8 pp |
+| F1 drift, turn 50+ (95% CI) | +12.2 pp (+6.7 to +18.0) | +47.2 pp (+37.0 to +57.4) |
+| KL at the answer, first 10 turns → late | 0.53 → 0.65 | 2.91 → 10.27 |
+| Late KL, small / large model answering | 0.60 / 0.73 | 8.03 / 14.21 |
+| Do chats drift by different amounts? (permutation p) | 0.50 (no) | 0.59 (no) |
+| Warning sign vs. next 3 turns' KL (Spearman ρ) | −0.01 | 0.04 |
+| Same, oracle version of the signal | −0.04 | 0.46 |
+
+*Drift* = how much worse than the model that re-reads everything (positive = worse). *pp* = percentage points of F1.
+
+### What it means
+
+1. **The setup checks out.** Naive re-translation collapses: its KL grows from 2.9 to 10.3 and it loses ~40–47 pp of F1, consistent with earlier reports that it collapses. So the code reproduces a known result, and the other numbers are worth taking seriously.
+
+2. **Segment-wise error is mostly an up-front cost, not a slow build-up.** It is already +7.2 pp worse in the first 10 turns, and only ~5 pp more appears by turn 50. In picture form: the photocopier is blurry from the first copy and gets only slightly blurrier after that.
+   **Not yet shown:** that the extra ~5 pp is real. The early value (7.2) lies inside the late 95% CI (6.7 to 18.0). The pre-agreed DROP rule tested whether late drift is *large* (> 3 pp), not whether it *grows* from early to late. Those are different questions, so the printout's "drift builds up" is stronger than the evidence. A paired test (each chat's late drift minus its own early drift) is still to do.
+
+3. **Chats drift alike (p ≈ 0.5).** Every chat ends up about equally blurry, so knowing *which* chat to refresh early buys little over refreshing on a timer. This is what triggered PIVOT.
+
+4. **The "surprise" warning sign doesn't work, for a structural reason.** The deployable signal compares the model's surprise now with its own recent average. If the notes are *steadily* blurry, the recent average is blurry too and the difference cancels out. A "compared with recently" signal sees *changes*, not a *constant* problem, and segment-wise drift is mostly constant. The oracle version (compared with the always-re-read model) does work once damage is large (ρ = 0.46 for naive), so surprise does carry information; the baseline is what hides it.
+
+5. **"Large model answering" shows more KL**, but bigger models make sharper predictions, so KL isn't directly comparable across the two models. This does not contradict Heo et al.'s finding that large → small drift grows faster.
+
+### Caveats
+
+- One small model pair; larger pairs may behave differently.
+- The translator saw 64 calibration texts (Heo et al. used 500). A better translator could shrink the up-front 7 pp.
+- 20 chats is little data for the "do chats differ?" test: real but small differences between chats could be missed.
+
+### Where this points
+
+The long-chat refresh idea looks weak. The bigger effect is the **cost of each single handoff**, which is the group's original question (should *this* handoff trust the translated cache?). Open questions for that:
+
+- Is the up-front 7 pp a **weak translator** (more calibration data, nonlinear mapper) or **the models genuinely representing things differently**? Re-fitting with `--n-calib 256` and comparing would start to separate the two.
+- A signal for a *constant* problem needs a baseline that isn't itself blurry, e.g. the sending model's own surprise on the same text.
+- Run the paired growth test above before claiming anything about build-up.
+
 ## Run it (4 commands)
 
 ```bash
