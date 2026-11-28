@@ -1,77 +1,88 @@
 # kill-test
 
-**Question:** when two models take turns in a long chat and pass translated KV caches ("notes") to each other, does the translation error build up over time, and differently for different chats? If not, there's nothing for a smart refresh policy to fix, and we drop the project.
+**Question:** when two models take turns in a long chat and pass translated notes (KV caches) to each other, does the translation error build up over time, and differently for different chats? If not, a "smart refresh" has nothing to fix.
 
-We play long CoQA chats three ways and compare them turn by turn:
+## What the numbers mean
 
-| Version | What happens at each handoff |
+### The cast
+| Term | Meaning |
 |---|---|
-| `prefill` | The answering model has its own notes on the whole chat (= always re-reading). The gold standard. |
-| `sw` (segment-wise) | Each model keeps its own notes. Pages written by the other model are translated **once**, from that model's own notes. |
-| `nv` (naive) | One set of notes, **fully re-translated** into the other model's format at every handoff (photocopy of a photocopy). |
+| **S / L** | **S**mall model (Qwen3-0.6B) and **L**arge model (Qwen3-1.7B). "0.6B" = 0.6 billion adjustable numbers inside the model |
+| **KV cache** | The model's "notes" on everything said so far |
+| **Prefill** | Re-reading the whole chat to make fresh notes. Accurate but expensive |
+| **Translator (mapper)** | Math that converts one model's notes into the other's shorthand ([Heo et al.](https://arxiv.org/abs/2608.03893)) |
+| **Turn** | One question + one answer. A **chat** (session) is ~60 turns |
+| **CoQA** | Public dataset of stories, each with a chain of questions and true answers |
 
-The translator is the closed-form ridge mapper from Heo et al. ([arXiv 2608.03893](https://arxiv.org/abs/2608.03893)).
+### The three versions
+| Name | What happens at each handoff |
+|---|---|
+| **prefill** | The answering model re-reads everything itself. Gold standard |
+| **sw** (segment-wise) | Each model keeps its own notes. Each new page is translated **once**, from the notes of the model that read it |
+| **nv** (naive) | One shared set of notes, **fully re-translated** at every handoff, including pages that were already translations (a photocopy of a photocopy) |
 
-## Findings: first run (November 24, 2026)
+### The scores
+| Term | Meaning |
+|---|---|
+| **F1** | How right an answer is: word overlap with the true answer, 0 to 1. It combines *precision* (of the words said, how many were right) and *recall* (of the right words, how many were said). True *"Mark Twain"* vs. said *"The writer is Mark Twain"* → precision 2/4, recall 2/2 → F1 = 0.67 |
+| **pp** | Percentage points: plain subtraction of percentages (70% vs. 60% = 10 pp) |
+| **Drift** | prefill's F1 − the other version's F1, in pp. **Positive = worse than re-reading** |
+| **KL** (KL divergence) | How differently the model is "thinking" right before it answers: compares its probabilities for every possible next word with prefill's. 0 = identical, ~0.1 = nearly the same, ~1 = noticeably different, ~10 = wildly different. Unit: nats. Less noisy than F1 |
+| **Surprise** | How unexpected the new question's words were to the model (average −log probability). Our proposed warning sign |
 
-**Decision by the pre-agreed rules: PIVOT.** Translation error is mostly a cost paid up front, it is about the same in every chat, and our cheap warning signal can't see it. A "smart refresh over long chats" policy has little room to beat a fixed schedule.
+### The statistics
+| Term | Meaning |
+|---|---|
+| **95% CI** | Range that very likely holds the true average, given only 20 chats. **If it includes 0, "no effect" can't be ruled out.** Computed by bootstrapping (resampling the chats thousands of times) |
+| **p** (permutation test) | For "do chats differ?": the chance of differences this big if all chats were really the same. Below 0.05 = they really differ |
+| **Spearman ρ** | Does one thing rise when another rises? −1 to +1, 0 = no relationship. Our bar for "the warning sign works" was 0.3 |
+| **Oracle version** | The signal computed with information you wouldn't have in real use (prefill's own surprise): the best it could do |
+| **Paired growth** | Each chat's late drift minus its *own* early drift, so harder chats don't skew the result |
 
-**Setup:** Qwen3-0.6B ↔ Qwen3-1.7B on one 12 GB GPU · 20 chats of 48–60 turns (4 CoQA stories each), models alternating every turn, large model first · translator fit on 64 FineWeb-Edu texts of 1,024 tokens (k = 8), stored in bfloat16 · thresholds as in `thresholds.json`.
+## The experiment
 
-| | Segment-wise | Naive re-translation |
+1. **Two models from the same family** whose notes have the same shape: Qwen3-0.6B and Qwen3-1.7B (one 12 GB GPU).
+2. **Built the translator:** both models read 64 web texts (FineWeb-Edu), and we learned a linear "dictionary" from one model's notes to the other's, in both directions.
+3. **Built 20 long chats:** 4 CoQA stories glued together, up to 15 questions each, giving 48–60 turns.
+4. **The models alternate answering**, large model first.
+5. **Every chat was played 3 ways side by side:** prefill, segment-wise, naive.
+6. **Same history for all three:** after each turn the *true* answer goes into the chat (teacher forcing), so the only difference between versions is the notes.
+7. **Measured every turn:** F1, KL vs. prefill, and surprise.
+8. **Decision rules were written down before running** (`thresholds.json`), so the test was fair.
+
+## Findings
+
+**Decision: PIVOT.** Drop "when to refresh over long chats". The cost sits in single handoffs of important pages.
+
+| | Segment-wise | Naive |
 |---|---|---|
-| F1 drift vs. always re-reading, first 10 turns | +7.2 pp | +38.8 pp |
-| F1 drift, turn 50+ (95% CI) | +12.2 pp (+6.7 to +18.0) | +47.2 pp (+37.0 to +57.4) |
-| KL at the answer, first 10 turns → late | 0.53 → 0.65 | 2.91 → 10.27 |
-| Late KL, small / large model answering | 0.60 / 0.73 | 8.03 / 14.21 |
-| Do chats drift by different amounts? (permutation p) | 0.50 (no) | 0.59 (no) |
-| Warning sign vs. next 3 turns' KL (Spearman ρ) | −0.01 | 0.04 |
-| Same, oracle version of the signal | −0.04 | 0.46 |
+| F1 drift vs. prefill, early → late | +7.2 → +12.2 pp | +38.8 → +47.2 pp |
+| Paired growth, late − early (95% CI) | +4.3 pp (−2.2 to +10.6) | +17.8 pp (+9.0 to +26.5) |
+| KL, early → late | 0.53 → 0.65 | 2.9 → 10.3 |
+| Do chats differ? (p) | 0.50 | 0.59 |
+| Warning sign vs. next 3 turns (ρ) · oracle | −0.01 · −0.04 | 0.04 · 0.46 |
 
-*Drift* = how much worse than the model that re-reads everything (positive = worse). *pp* = percentage points of F1.
+1. **The setup works.** Naive collapses and gets worse over time, as earlier papers report.
+2. **Segment-wise is a flat, one-time cost** of roughly 9–10 pp. The growth CI includes 0, so there's no proven build-up.
+3. **The cost comes from using a translated story:**
 
-### What it means
+   | Segment-wise turns | F1 drift | KL |
+   |---|---|---|
+   | Answering model read the current story itself | −1.1 pp | 0.11 |
+   | Got the story translated (1–2 turns later) | +11.4 pp | 0.64 |
+   | Further into the same story | +9.9 pp | 0.63 |
 
-1. **The setup checks out.** Naive re-translation collapses: its KL grows from 2.9 to 10.3 and it loses ~40–47 pp of F1, consistent with earlier reports that it collapses. So the code reproduces a known result, and the other numbers are worth taking seriously.
+   Translated pages from *earlier* stories barely matter.
+4. **All chats drift alike** (p ≈ 0.5), so a fixed refresh schedule does as well as a smart one.
+5. **The surprise signal fails** (ρ ≈ 0). It compares against its own recent average, which hides a steady problem. The oracle version works on naive (ρ = 0.46), so surprise does carry information.
 
-2. **Segment-wise error is mostly an up-front cost, not a slow build-up.** It is already +7.2 pp worse in the first 10 turns, and only ~5 pp more appears by turn 50. In picture form: the photocopier is blurry from the first copy and gets only slightly blurrier after that.
-   **Not yet shown:** that the extra ~5 pp is real. The early value (7.2) lies inside the late 95% CI (6.7 to 18.0). The pre-agreed DROP rule tested whether late drift is *large* (> 3 pp), not whether it *grows* from early to late. Those are different questions, so the printout's "drift builds up" is stronger than the evidence. A paired test (each chat's late drift minus its own early drift) is still to do.
+**Caveats:** one small model pair · translator fit on 64 texts (Heo et al. used 500) · only 20 chats · the single-handoff check (`check_handoff.py`) is flawed: it asks each story's first question with no example answer before it, so the 1.7B model answers with blanks (`____`), and its numbers should be ignored.
 
-3. **Chats drift alike (p ≈ 0.5).** Every chat ends up about equally blurry, so knowing *which* chat to refresh early buys little over refreshing on a timer. This is what triggered PIVOT.
+**Next:** is the ~10 pp per-handoff cost a weak translator (refit with more texts) or the two models genuinely differing?
 
-4. **The "surprise" warning sign doesn't work, for a structural reason.** The deployable signal compares the model's surprise now with its own recent average. If the notes are *steadily* blurry, the recent average is blurry too and the difference cancels out. A "compared with recently" signal sees *changes*, not a *constant* problem, and segment-wise drift is mostly constant. The oracle version (compared with the always-re-read model) does work once damage is large (ρ = 0.46 for naive), so surprise does carry information; the baseline is what hides it.
+Data: `results.jsonl` · plots and numbers in `analysis/` (`fig1_drift_vs_turn.png`, right panel, is the main figure).
 
-5. **"Large model answering" shows more KL**, but bigger models make sharper predictions, so KL isn't directly comparable across the two models. This does not contradict Heo et al.'s finding that large → small drift grows faster.
-
-### Why a fixed refresh schedule is enough (and what that doesn't tell us)
-
-Two findings are easy to mix up:
-
-| Finding | What it tells us |
-|---|---|
-| **Chats drift alike** (p ≈ 0.5) | A smart refresh can't beat a timer: there is no "this chat is worse, refresh it early" to detect. **This is why a fixed schedule is enough.** |
-| **Drift is mostly up front, then roughly flat** | The *shape* of drift over time. Not yet confirmed (paired growth test still to do). |
-
-A fixed schedule would be enough even if drift grew a lot over time, as long as every chat grew at the same speed; we would just refresh more often. Analogy: if every car's oil gets dirty at exactly the same rate, a "change every 5,000 km" sticker works as well as an oil sensor.
-
-What the kill test does **not** tell us: *how often* to refresh, or whether a refresh is worth its cost. That is a separate cost-vs-quality trade-off.
-
-### Caveats
-
-- One small model pair; larger pairs may behave differently.
-- The translator saw 64 calibration texts (Heo et al. used 500). A better translator could shrink the up-front 7 pp.
-- 20 chats is little data for the "do chats differ?" test: real but small differences between chats could be missed.
-
-### Where this points
-
-The long-chat refresh idea looks weak. The bigger effect is the **cost of each single handoff**, which is the group's original question (should *this* handoff trust the translated cache?). Open questions for that:
-
-- Is the up-front 7 pp a **weak translator** (more calibration data, nonlinear mapper) or **the models genuinely representing things differently**? Re-fitting with `--n-calib 256` and comparing would start to separate the two.
-- **Does the up-front cost come from one big page?** Each chat starts with a long story. In segment-wise, the model that didn't read the story gets it as translated notes. If most of the early ~7 pp comes from that one big translated page rather than the many short Q&A pages, then *what* was translated matters more than *how many turns* have passed, and refreshing right after a long document is translated may be what pays off. Test: compare drift on turns right after a new story arrives with turns mid-story, or translate the story with re-reading and only the Q&A pages with the translator.
-- A signal for a *constant* problem needs a baseline that isn't itself blurry, e.g. the sending model's own surprise on the same text.
-- Run the paired growth test above before claiming anything about build-up.
-
-## Run it (4 commands)
+## How to run
 
 ```bash
 pip install -r requirements.txt
@@ -92,7 +103,7 @@ All pairs below are "matched-KV" (8 KV heads, head size 128), which the mapper n
 
 | `--pair` | Models | Rough GPU memory |
 |---|---|---|
-| `0.6b-1.7b` | Qwen3-0.6B ↔ 1.7B | ~16 GB, or 4–8 GB with the large model on the CPU (below) |
+| `0.6b-1.7b` | Qwen3-0.6B ↔ 1.7B | ~12–16 GB, or 4–8 GB with the large model on the CPU (below) |
 | `1.7b-4b` | Qwen3-1.7B ↔ 4B | ~24 GB (add `--mapper-dtype bfloat16` to steps 2–3 if tight) |
 | `4b-8b` (default) | Qwen3-4B ↔ 8B | ~40 GB |
 | `8b-32b` | Qwen3-8B ↔ 32B (a pair Heo et al. tested) | 80 GB+, or two GPUs: `--devices cuda:0,cuda:1` |
@@ -135,50 +146,3 @@ python scripts/download_data.py --out data/
 huggingface-cli download Qwen/Qwen3-4B && huggingface-cli download Qwen/Qwen3-8B
 ```
 Then add `--calib-text-file data/calib.txt` to step 1 and `--coqa-file data/coqa_validation.json` to steps 2–3.
-
-## What comes out (`runs/<pair>/`)
-
-| File | What it is |
-|---|---|
-| `fit_report_*.json` | Translator quality (held-out R², 1.0 = perfect) and which source layers feed each target layer |
-| `handoff_report.json` | Single-handoff check: F1 with translated vs. own notes, plus example answers |
-| `results.jsonl` | One line per turn: each version's answer, F1, KL vs. `prefill`, and "surprise" |
-| `analysis/fig1_drift_vs_turn.png` | Does drift grow over the chat? (faint line per chat, bold average) |
-| `analysis/fig2_by_answerer.png` | Is it worse when the small model receives notes from the large one? |
-| `analysis/fig3_signal.png` | Does surprise warn us before drift? |
-| `analysis/summary.json` | All numbers + the decision |
-
-### How the decision is made (`thresholds.json`)
-
-1. **DROP** if segment-wise F1 drift from turn 50 on is under 3 pp and its 95% CI touches 0 → nothing builds up.
-2. **PIVOT** if chats don't drift by different amounts (permutation test on late KL, p ≥ 0.05) → a fixed refresh schedule is enough.
-3. **PIVOT (signal)** if drift differs by chat but surprise doesn't track the next 3 turns' KL (Spearman < 0.3).
-4. **GO** otherwise.
-
-Naive re-translation should look clearly worse than segment-wise. Earlier papers report it collapsing, so if it doesn't, suspect the setup before trusting the decision.
-
-## Measurements, in plain words
-
-- **F1**: word overlap between an answer and the true CoQA answer (1 = perfect). Drift = `prefill` F1 − other F1, in percentage points.
-- **KL**: how different the model's next-word probabilities are at the answer, compared with `prefill`. 0 = identical. Less noisy than F1.
-- **Surprise**: how unexpected the new question's words were to the model (average negative log-probability). It's free, because the model reads the question anyway. The analysis subtracts the same model's recent average, so a hard question isn't mistaken for blurry notes.
-
-## Choices to know about (things Heo et al. don't fully specify, or that we simplified)
-
-- **Teacher forcing**: the chat history always contains the *true* previous answers, so all three versions read exactly the same text and only the notes differ.
-- **Prompt format**: plain text (`Story: … Q: … A:`), not a chat template, so Qwen3's thinking mode never triggers. Answers are greedy and stop at a newline.
-- **Mapper**: keys and values pick their top-k source layers separately; ridge is solved on mean-centred statistics with λ = 0.01 and a bias term. Calibration defaults to 64 × 1024-token FineWeb-Edu sequences (Heo et al. used 500), which is enough for a kill test. Raise it with `--n-calib`.
-- **"Naive re-translation"** follows our reading of Kvedaras & Rasymas (arXiv 2611.12062): the whole cache is re-translated at every handoff. Check their Section 8 to confirm.
-- **Sessions**: 4 CoQA validation stories glued together, up to 15 questions each (≤ 60 turns). Models alternate every turn, large model first.
-
-## Code map
-
-```
-killtest/kv.py        notes as plain tensors, RoPE remove/re-apply, model calls
-killtest/mapper.py    the translator: layer selection, closed-form ridge fit, translate()
-killtest/runner.py    plays one chat three ways; single-handoff check
-killtest/data.py      CoQA -> long chats, calibration text
-killtest/analysis.py  statistics, plots, decision
-killtest/metrics.py   CoQA F1, Spearman, bootstrap, permutation test
-tests/                CPU tests with tiny random models (perfect translator => all versions match prefill)
-```
