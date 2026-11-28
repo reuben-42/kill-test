@@ -50,37 +50,37 @@
 7. **Measured every turn:** F1, KL vs. prefill, and surprise.
 8. **Decision rules were written down before running** (`thresholds.json`), so the test was fair.
 
-## Findings
+## The graphs
 
-**Decision: PIVOT.** Drop "when to refresh over long chats". The cost sits in single handoffs of important pages.
+All three are in `analysis/` (from `results.jsonl`, 20 chats). Blue = segment-wise, red = naive.
 
-| | Segment-wise | Naive |
-|---|---|---|
-| F1 drift vs. prefill, turns 1–10 → turn 50+ | +7.2 → +12.2 pp | +38.8 → +47.2 pp |
-| Paired growth, turns 41+ minus 1–10 (95% CI) | +4.3 pp (−2.2 to +10.6) | +17.8 pp (+9.0 to +26.5) |
-| KL, turns 1–10 → turn 50+ | 0.53 → 0.65 | 2.9 → 10.3 |
-| Do chats differ? (p) | 0.50 | 0.59 |
-| Warning sign vs. next 3 turns (ρ) · oracle | −0.01 · −0.04 | 0.04 · 0.46 |
+### 1. Does error build up over a long chat? (`fig1_drift_vs_turn.png`)
 
-1. **The setup works.** Naive collapses and gets worse over time, as earlier papers report.
-2. **Segment-wise is a flat, one-time cost** of roughly 9–10 pp. The growth CI includes 0, so there's no proven build-up.
-3. **The cost comes from using a translated story:**
+![Drift vs. turn](analysis/fig1_drift_vs_turn.png)
 
-   | Segment-wise turns | F1 drift | KL |
-   |---|---|---|
-   | Answering model read the current story itself | −1.1 pp | 0.11 |
-   | Got the story translated (1–2 turns later) | +11.4 pp | 0.64 |
-   | Further into the same story | +9.9 pp | 0.63 |
+- **x-axis:** turn (1–60). **Faint lines:** individual chats. **Bold lines:** average over the 20 chats (5-turn smoothing). **Dashed grey line:** turn 50, where "late" starts.
+- **Left, F1 drift** (points worse than always re-reading): single chats swing between −100 and +100 because one answer is often fully right or fully wrong, so read the bold lines. Red climbs from ~15 to ~50–60 by turn 20, then levels off; blue stays around 5–15.
+- **Right, KL** (how differently the model thinks than when it re-reads): red climbs steadily from ~1 to ~12; blue stays flat near 0.5.
+- Red levels off on the left but not on the right because F1 has a ceiling: once answers are mostly wrong they can't get much worse, while KL keeps measuring the notes getting blurrier.
+- **Reading:** naive re-translation piles up errors; segment-wise pays a small fixed cost and doesn't build up. The right panel is the clearest picture of the result.
 
-   Translated pages from *earlier* stories barely matter.
-4. **All chats drift alike** (p ≈ 0.5), so a fixed refresh schedule does as well as a smart one.
-5. **The surprise signal fails** (ρ ≈ 0). It compares against its own recent average, which hides a steady problem. The oracle version works on naive (ρ = 0.46), so surprise does carry information.
+### 2. Does it depend on which model answers? (`fig2_by_answerer.png`)
 
-**Caveats:** one small model pair · translator fit on 64 texts (Heo et al. used 500) · only 20 chats · the single-handoff check (`check_handoff.py`) is flawed: it asks each story's first question with no example answer before it, so the 1.7B model answers with blanks (`____`), and its numbers should be ignored.
+![KL by answering model](analysis/fig2_by_answerer.png)
 
-**Next:** is the ~10 pp per-handoff cost a weak translator (refit with more texts) or the two models genuinely differing?
+- **x-axis:** turn. **y-axis:** KL. **Solid:** the small model answered (using notes from the large one). **Dashed:** the large model answered.
+- Segment-wise stays flat near 0.5–1 for both models. Naive climbs for both, the large model's line highest (~20 by turn 60, vs. ~6–10 for the small model).
+- **Careful:** a larger model makes more confident predictions, which inflates KL, so the two models' KL can't be compared fairly. Safe reading: segment-wise is flat whichever model answers.
 
-Data: `results.jsonl` · plots and numbers in `analysis/` (`fig1_drift_vs_turn.png`, right panel, is the main figure).
+### 3. Does the "surprise" warning sign go up before the notes get blurry? (`fig3_signal.png`)
+
+![Signal vs. upcoming drift](analysis/fig3_signal.png)
+
+- **Each dot:** one segment-wise turn of one chat (~1,000 dots).
+- **x-axis:** the warning sign: how surprised the model was by the new question, minus its own recent average (right = more surprised than usual).
+- **y-axis:** how blurry the notes actually got over the next 3 turns (average KL).
+- If the sign worked, the cloud would tilt up to the right. It is a shapeless blob around 0 with no tilt: **Spearman ρ = −0.01**.
+- **Reading:** the warning sign doesn't predict blur. It compares the model with its own recent average, so steady blur cancels out, and odd or hard questions raise surprise for reasons unrelated to the notes.
 
 ## How to run
 
