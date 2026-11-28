@@ -50,11 +50,11 @@
 7. **Measured every turn:** F1, KL vs. prefill, and surprise.
 8. **Decision rules were written down before running** (`thresholds.json`), so the test was fair.
 
-## The graphs
+## The graph
 
-All three are in `analysis/` (from `results.jsonl`, 20 chats). Blue = segment-wise, red = naive.
+From `results.jsonl` (20 chats), saved in `analysis/`. Blue = segment-wise, red = naive.
 
-### 1. Does error build up over a long chat? (`fig1_drift_vs_turn.png`)
+### Does error build up over a long chat? (`fig1_drift_vs_turn.png`)
 
 ![Drift vs. turn](analysis/fig1_drift_vs_turn.png)
 
@@ -63,24 +63,6 @@ All three are in `analysis/` (from `results.jsonl`, 20 chats). Blue = segment-wi
 - **Right, KL** (how differently the model thinks than when it re-reads): red climbs steadily from ~1 to ~12; blue stays flat near 0.5.
 - Red levels off on the left but not on the right because F1 has a ceiling: once answers are mostly wrong they can't get much worse, while KL keeps measuring the notes getting blurrier.
 - **Reading:** naive re-translation piles up errors; segment-wise pays a small fixed cost and doesn't build up. The right panel is the clearest picture of the result.
-
-### 2. Does it depend on which model answers? (`fig2_by_answerer.png`)
-
-![KL by answering model](analysis/fig2_by_answerer.png)
-
-- **x-axis:** turn. **y-axis:** KL. **Solid:** the small model answered (using notes from the large one). **Dashed:** the large model answered.
-- Segment-wise stays flat near 0.5–1 for both models. Naive climbs for both, the large model's line highest (~20 by turn 60, vs. ~6–10 for the small model).
-- **Careful:** a larger model makes more confident predictions, which inflates KL, so the two models' KL can't be compared fairly. Safe reading: segment-wise is flat whichever model answers.
-
-### 3. Does the "surprise" warning sign go up before the notes get blurry? (`fig3_signal.png`)
-
-![Signal vs. upcoming drift](analysis/fig3_signal.png)
-
-- **Each dot:** one segment-wise turn of one chat (~1,000 dots).
-- **x-axis:** the warning sign: how surprised the model was by the new question, minus its own recent average (right = more surprised than usual).
-- **y-axis:** how blurry the notes actually got over the next 3 turns (average KL).
-- If the sign worked, the cloud would tilt up to the right. It is a shapeless blob around 0 with no tilt: **Spearman ρ = −0.01**.
-- **Reading:** the warning sign doesn't predict blur. It compares the model with its own recent average, so steady blur cancels out, and odd or hard questions raise surprise for reasons unrelated to the notes.
 
 ## How to run
 
