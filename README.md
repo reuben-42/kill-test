@@ -56,9 +56,9 @@
 
 | | Segment-wise | Naive |
 |---|---|---|
-| F1 drift vs. prefill, early → late | +7.2 → +12.2 pp | +38.8 → +47.2 pp |
-| Paired growth, late − early (95% CI) | +4.3 pp (−2.2 to +10.6) | +17.8 pp (+9.0 to +26.5) |
-| KL, early → late | 0.53 → 0.65 | 2.9 → 10.3 |
+| F1 drift vs. prefill, turns 1–10 → turn 50+ | +7.2 → +12.2 pp | +38.8 → +47.2 pp |
+| Paired growth, turns 41+ minus 1–10 (95% CI) | +4.3 pp (−2.2 to +10.6) | +17.8 pp (+9.0 to +26.5) |
+| KL, turns 1–10 → turn 50+ | 0.53 → 0.65 | 2.9 → 10.3 |
 | Do chats differ? (p) | 0.50 | 0.59 |
 | Warning sign vs. next 3 turns (ρ) · oracle | −0.01 · −0.04 | 0.04 · 0.46 |
 
