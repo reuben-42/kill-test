@@ -1,0 +1,122 @@
+{
+  "S2L": {
+    "native_f1": 0.01142857142857143,
+    "translated_f1": 0.24735736015827547,
+    "retention": 21.643769013849102,
+    "agree_f1": 0.0890909090909091,
+    "mean_kl": 1.8385230648517608,
+    "top1_agree": 0.08,
+    "examples": [
+      {
+        "native_answer": "____",
+        "translated_answer": "The answer is not in the passage.",
+        "true_answer": "February, 1913",
+        "native_f1": 0.0,
+        "translated_f1": 0.0,
+        "agree_f1": 0.0,
+        "kl": 1.2456943988800049,
+        "top1_agree": false
+      },
+      {
+        "native_answer": "__________",
+        "translated_answer": "He was a teacher.",
+        "true_answer": "teaching",
+        "native_f1": 0.0,
+        "translated_f1": 0.0,
+        "agree_f1": 0.0,
+        "kl": 1.4540866613388062,
+        "top1_agree": false
+      },
+      {
+        "native_answer": "____",
+        "translated_answer": "No, because the story says that the man was not hurt.",
+        "true_answer": "no",
+        "native_f1": 0.0,
+        "translated_f1": 0.19999999999999998,
+        "agree_f1": 0.0,
+        "kl": 3.7357585430145264,
+        "top1_agree": false
+      },
+      {
+        "native_answer": "____",
+        "translated_answer": "The writer is Mark Twain.",
+        "true_answer": "Mark Twain",
+        "native_f1": 0.0,
+        "translated_f1": 0.6666666666666666,
+        "agree_f1": 0.0,
+        "kl": 1.3551640510559082,
+        "top1_agree": false
+      },
+      {
+        "native_answer": "__________",
+        "translated_answer": "Mike McLelland was the district attorney of Texas.",
+        "true_answer": "District Attorney",
+        "native_f1": 0.0,
+        "translated_f1": 0.4444444444444445,
+        "agree_f1": 0.0,
+        "kl": 1.8310248851776123,
+        "top1_agree": false
+      }
+    ]
+  },
+  "L2S": {
+    "native_f1": 0.47079437229437227,
+    "translated_f1": 0.2802705790941085,
+    "retention": 0.5953142084690523,
+    "agree_f1": 0.44821546903389,
+    "mean_kl": 1.0430617406964302,
+    "top1_agree": 0.44,
+    "examples": [
+      {
+        "native_answer": "1913",
+        "translated_answer": "1913",
+        "true_answer": "February, 1913",
+        "native_f1": 0.6666666666666666,
+        "translated_f1": 0.6666666666666666,
+        "agree_f1": 1.0,
+        "kl": 0.15277370810508728,
+        "top1_agree": true
+      },
+      {
+        "native_answer": "A: A: A: A: A: A: A: A: A: A: A: A:",
+        "translated_answer": "A: A: A: A: A: A: A: A: A: A: A: A:",
+        "true_answer": "teaching",
+        "native_f1": 0.0,
+        "translated_f1": 0.0,
+        "agree_f1": 1.0,
+        "kl": 0.6032006144523621,
+        "top1_agree": true
+      },
+      {
+        "native_answer": "No",
+        "translated_answer": "A: A: A: A: A: A: A: A: A: A: A: A:",
+        "true_answer": "no",
+        "native_f1": 1.0,
+        "translated_f1": 0.0,
+        "agree_f1": 0.0,
+        "kl": 1.2564421892166138,
+        "top1_agree": false
+      },
+      {
+        "native_answer": "Mark Twain",
+        "translated_answer": "A: A: A: A: A: A: A: A: A: A: A: A:",
+        "true_answer": "Mark Twain",
+        "native_f1": 1.0,
+        "translated_f1": 0.0,
+        "agree_f1": 0.0,
+        "kl": 2.863966464996338,
+        "top1_agree": false
+      },
+      {
+        "native_answer": "A district attorney",
+        "translated_answer": "a district attorney",
+        "true_answer": "District Attorney",
+        "native_f1": 1.0,
+        "translated_f1": 1.0,
+        "agree_f1": 1.0,
+        "kl": 0.5773799419403076,
+        "top1_agree": false
+      }
+    ]
+  }
+}

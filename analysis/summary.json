@@ -1,0 +1,69 @@
+{
+  "thresholds": {
+    "late_start_turn": 50,
+    "drop_below_pp": 3.0,
+    "sessions_differ_p": 0.05,
+    "signal_window": 5,
+    "signal_horizon": 3,
+    "min_signal_spearman": 0.3
+  },
+  "n_sessions": 20,
+  "turns_per_session": [
+    56,
+    58,
+    50,
+    53,
+    55,
+    60,
+    56,
+    55,
+    50,
+    55,
+    60,
+    50,
+    48,
+    55,
+    55,
+    55,
+    56,
+    51,
+    60,
+    50
+  ],
+  "sw": {
+    "late_f1_drift_pp": 12.169178602181228,
+    "late_f1_drift_ci": [
+      6.7131903187789055,
+      17.957822907025164
+    ],
+    "early_f1_drift_pp": 7.212075424575424,
+    "late_kl": 0.6465669850265193,
+    "early_kl": 0.5344935284074928,
+    "sessions_differ_p": 0.496751624187906,
+    "signal_spearman": -0.012885212224642485,
+    "oracle_signal_spearman": -0.040618626526646995,
+    "late_kl_by_answerer": {
+      "S": 0.6011270395324876,
+      "L": 0.7255002584543593
+    }
+  },
+  "nv": {
+    "late_f1_drift_pp": 47.1805707188365,
+    "late_f1_drift_ci": [
+      37.03322588895227,
+      57.38023520128431
+    ],
+    "early_f1_drift_pp": 38.81414535327074,
+    "late_kl": 10.264843681249452,
+    "early_kl": 2.9101029065437616,
+    "sessions_differ_p": 0.592703648175912,
+    "signal_spearman": 0.044270704662675915,
+    "oracle_signal_spearman": 0.46214827605092973,
+    "late_kl_by_answerer": {
+      "S": 8.029495042562484,
+      "L": 14.205893743897276
+    }
+  },
+  "decision": "PIVOT",
+  "reason": "drift builds up but chats don't differ (p = 0.497): a fixed refresh schedule is enough; publish the measurement"
+}
